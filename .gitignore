@@ -1,0 +1,16 @@
+venv/
+
+# Env files - fetched from S3, never committed
+xologic/env/.env.*
+!xologic/env/.env.example
+
+# Runtime output
+xologic/logs/
+xologic/output/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
