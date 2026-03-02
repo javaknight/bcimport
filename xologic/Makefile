@@ -21,6 +21,9 @@ ENV_FILES = \
 LINTDIRS = \
 	$(BASEDIR)
 
+envfile-%: $(ENV_DIR)/.env.%
+	@:
+
 default: venv
 
 all: venv lint test
@@ -57,7 +60,7 @@ run-%: venv envfiles | $(OUTPUT_DIR)
 
 prime-categories:
 	$(MAKE) prime-categories-dev
-prime-categories-%: venv envfiles
+prime-categories-%: venv envfile-%
 	$(printTarget)
 	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/prime_categories.py
 
@@ -89,6 +92,18 @@ venv/touch: requirements.txt
 
 envfiles: $(ENV_FILES)
 
+push-config:
+	$(MAKE) push-config-dev
+
+push-config-%: envfile-%
+	$(printTarget)
+	@test -f $(ENV_DIR)/.env.$* || \
+		(echo "ERROR: env/.env.$* not found — copy from env/.env.example and fill in values." && exit 1)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && \
+		aws s3 cp $(ENV_DIR)/.env.$* \
+		s3://$$S3_SECRETS_BUCKET/.env
+	@echo "Pushed: env/.env.$* → s3://$$S3_SECRETS_BUCKET/.env"
+
 $(ENV_FILES):
 	$(printTarget)
 	@mkdir -p $(ENV_DIR)
@@ -110,4 +125,5 @@ endef
 .PHONY: all test lint format black isort \
 	run-sample run \
 	prime-categories activate-categories \
-	envfiles clean clean-env clean-all venv
+	envfiles clean clean-env clean-all venv \
+	push-config
