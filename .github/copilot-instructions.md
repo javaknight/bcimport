@@ -127,6 +127,21 @@ endef
 ### .PHONY
 Declared at the bottom of the file listing all non-file targets.
 
+**Critical rule:** Never list concrete `*-development` / `*-prod` / `*-stage` variants in `.PHONY`. GNU Make will not match a pattern rule (`%-development`) against a target that is listed as phony — it will silently do nothing. Only the shorthand alias (e.g. `run`, `push-sa`) goes in `.PHONY`; the concrete suffixed variants are intentionally omitted so the `%` pattern can match them.
+
+```makefile
+# CORRECT
+.PHONY: run push-sa
+
+run:
+    $(MAKE) run-dev
+run-%: venv envfiles        # matches run-dev, run-stage, run-prod
+    ...
+
+# WRONG — run-dev in .PHONY breaks the pattern match
+.PHONY: run run-dev run-stage run-prod
+```
+
 ---
 
 ## Directory Structure
