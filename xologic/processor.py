@@ -122,6 +122,7 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
         sku = payload["sku"]
         if sku in sku_to_id:
             payload["id"] = sku_to_id[sku]
+            payload.pop("is_visible", None)  # never override visibility on updates
             updates.append((payload, raw))
         else:
             creates.append((payload, raw))
@@ -310,7 +311,7 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     mins, secs = divmod(int(elapsed), 60)
     processed = n_success + n_warnings + n_errors
     log.info(
-        "Processed %d/%d: %d success, %d warnings (207), %d errors. Elapsed: %dm %ds",
+        "Processed %d/%d: %d success, %d warnings (207), %d errors. Elapsed: %dm %ds. Run ID: %s",
         processed,
         total,
         n_success,
@@ -318,6 +319,7 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
         n_errors,
         mins,
         secs,
+        run_id,
     )
 
 

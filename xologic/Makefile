@@ -83,6 +83,20 @@ poc-metafield-%: venv envfile-%
 	@test -n "$(PRODUCT_ID)" || (echo "Usage: make poc-metafield PRODUCT_ID=<bc_product_id>" && exit 1)
 	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/poc_metafield_search.py --product-id $(PRODUCT_ID)
 
+activate-products:
+	$(MAKE) activate-products-dev
+activate-products-%: venv envfile-%
+	$(printTarget)
+	@test -n "$(RUN_ID)" || (echo "Usage: make activate-products RUN_ID=<run-id>  (run ID is logged at the start of each import run)" && exit 1)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/activate_products.py --run-id $(RUN_ID)
+
+delete-run-products:
+	$(MAKE) delete-run-products-dev
+delete-run-products-%: venv envfile-%
+	$(printTarget)
+	@test -n "$(RUN_ID)" || (echo "Usage: make delete-run-products RUN_ID=<run-id>" && exit 1)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/delete_run_products.py --run-id $(RUN_ID) --confirm
+
 clean:
 	$(printTarget)
 	-rm -rf $(LOGDIR) .pytest_cache .mypy_cache
@@ -138,5 +152,6 @@ endef
 .PHONY: all test lint format black isort \
 	run-sample run \
 	prime-lutron-categories prime-teardown-lutron-categories activate-lutron-categories poc-metafield \
+	activate-products delete-run-products \
 	envfiles clean clean-env clean-all venv \
 	push-config
