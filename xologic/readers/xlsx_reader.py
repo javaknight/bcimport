@@ -1,5 +1,5 @@
 """
-Reads and filters the XOlogic XLSX feed.
+Reads and filters the XOlogic XLSX feed for a given vendor.
 """
 import logging
 import os
@@ -8,13 +8,11 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-VENDOR_ID = 4460
-PRODUCT_TYPES = {0, 1, 4}
 
-
-def load_feed(path: str) -> pd.DataFrame:
+def load_feed(path: str, vendor_id: int, product_types: set[int]) -> pd.DataFrame:
     """
-    Read the XOlogic XLSX feed and return rows matching VendorID and Product Type filters.
+    Read the XOlogic XLSX feed and return rows matching the given vendor
+    and product type filters.
     Raises FileNotFoundError if the file does not exist.
     """
     if not os.path.exists(path):
@@ -26,9 +24,12 @@ def load_feed(path: str) -> pd.DataFrame:
     log.info("Total rows in feed: %d", total)
 
     df = df[
-        (df["VendorID"] == VENDOR_ID) &
-        (df["Product Type"].isin(PRODUCT_TYPES))
+        (df["VendorID"] == vendor_id) &
+        (df["Product Type"].isin(product_types))
     ].reset_index(drop=True)
 
-    log.info("Rows after filter (VendorID=%d, Product Type in %s): %d", VENDOR_ID, PRODUCT_TYPES, len(df))
+    log.info(
+        "Rows after filter (VendorID=%d, Product Type in %s): %d",
+        vendor_id, product_types, len(df),
+    )
     return df

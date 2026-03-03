@@ -1,16 +1,28 @@
 """
-One-shot script: creates/verifies the Electrical Hardware -> Lutron category
-hierarchy in BigCommerce and writes category_map.json for use by the main
-processor.
+Creates/verifies a vendor category hierarchy in BigCommerce and writes a
+vendor-specific category map JSON for use by the processor.
 
-Run via: make prime-categories
+Default behavior is additive: existing categories and their IDs are preserved,
+only missing categories are created.  Use --teardown to delete and recreate
+the entire tree (WARNING: all existing product category assignments will be lost).
+
+Run via:
+    make prime-lutron-categories
+    make prime-teardown-lutron-categories   # full reset
+or directly:
+    python tools/prime_categories.py --vendor lutron
+    python tools/prime_categories.py --vendor lutron --teardown
 """
+import argparse
+import importlib
 import json
 import logging
 import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from bigc import BigCommerceAPI
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,158 +30,134 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-CATEGORY_MAP_PATH = os.path.join(os.path.dirname(__file__), "..", "category_map.json")
-ELECTRICAL_HARDWARE = "Electrical Hardware"
-
-# Subcategories to create under Lutron. Extend this list as needed.
-LUTRON_SUBCATEGORIES = [
-    "Cables",
-    "Connectors",
-    "Cords",
-    "Dimmers",
-    "Fan Wall Mount Controls",
-    "Lighting Accessories",
-    "Lighting Kits",
-    "Lightswitches",
-    "Other Lighting Controls",
-    "Other Specialty Items",
-    "Power Supplies",
-    "Sensors",
-    "Switch Plates",
-    "Transformers",
-    "Utility Accessories"
-]
-
 
 def _category_tree_id(category: dict) -> int | None:
     """Return tree_id from category payload, regardless of BC response field naming."""
     return category.get("tree_id") or category.get("category_tree_id")
 
 
-def _teardown_existing(client: BigCommerceAPI) -> None:
-    """If category_map.json exists, delete all listed categories from BC then remove the file."""
-    if not os.path.exists(CATEGORY_MAP_PATH):
+def _teardown_existing(client: BigCommerceAPI, map_path: str) -> None:
+    """If the category map file exists, delete all listed categories from BC then remove the file."""
+    if not os.path.exists(map_path):
         return
 
-    with open(CATEGORY_MAP_PATH, encoding="utf-8") as f:
+    with open(map_path, encoding="utf-8") as f:
         category_map: dict[str, int] = json.load(f)
 
     if not category_map:
-        os.remove(CATEGORY_MAP_PATH)
+        os.remove(map_path)
         return
 
-    log.info("Existing category_map.json found — removing %d categories from BC", len(category_map))
+    log.info("Existing %s found — removing %d categories from BC", map_path, len(category_map))
 
-    # Delete in reverse order so subcategories are removed before the parent
+    # Delete in reverse order so subcategories are removed before parents
     for name, category_id in reversed(list(category_map.items())):
         log.info("Deleting category: %s (id=%d)", name, category_id)
-        client.categories_v3.delete(category_id)  # raises on failure — halts run
+        client.categories_v3.delete(category_id)
         log.info("Deleted: %s", name)
 
-    os.remove(CATEGORY_MAP_PATH)
-    log.info("Removed %s", CATEGORY_MAP_PATH)
+    os.remove(map_path)
+    log.info("Removed %s", map_path)
 
 
-def prime_categories() -> None:
+def prime_categories(vendor_cfg, teardown: bool = False) -> None:
+    """Create/verify the vendor category hierarchy and write the category map file.
+
+    If teardown=True, deletes the entire existing tree first (IDs will change).
+    Default (teardown=False) is additive: adds missing categories, preserves existing ones.
+    """
     client = BigCommerceAPI(
         store_hash=os.environ["BC_STORE_HASH"],
         access_token=os.environ["BC_ACCESS_TOKEN"],
     )
     category_tree = int(os.environ["CATEGORY_TREE"])
 
-    _teardown_existing(client)
+    map_path = os.path.join(os.path.dirname(__file__), "..", vendor_cfg.CATEGORY_MAP_FILE)
+    if teardown:
+        log.warning("--teardown specified: deleting existing category tree for %s", vendor_cfg.VENDOR_CATEGORY)
+        _teardown_existing(client, map_path)
+        existing_map: dict[str, int] = {}
+    elif os.path.exists(map_path):
+        log.info("Category map exists — running in additive mode (use --teardown to reset)")
+        with open(map_path, encoding="utf-8") as f:
+            existing_map = json.load(f)
+    else:
+        existing_map = {}
 
-    # Fetch existing categories
+    # Fetch existing categories from BC
     existing = list(client.categories_v3.all())
-    existing_in_tree = [c for c in existing if _category_tree_id(c) == category_tree]
+    existing_by_id: dict[int, dict] = {c["id"]: c for c in existing}
 
-    category_map: dict[str, int] = {}
+    category_map: dict[str, int] = dict(existing_map)  # start from what we already know
 
-    # Ensure Electrical Hardware root exists in the configured tree
-    electrical_hardware = next(
-        (
-            c
-            for c in existing_in_tree
-            if c["name"] == ELECTRICAL_HARDWARE and c.get("parent_id") == 0
-        ),
-        None,
-    )
-    if electrical_hardware:
-        electrical_hardware_id = electrical_hardware["id"]
-        log.info(
-            "%s root already exists in tree %d: id=%d",
-            ELECTRICAL_HARDWARE,
-            category_tree,
-            electrical_hardware_id,
-        )
-    else:
+    def _ensure_category(
+        name: str, parent_id: int, existing_id: int | None
+    ) -> int:
+        """Return BC category ID, creating or updating as needed."""
+        if existing_id is not None:
+            bc_cat = existing_by_id.get(existing_id)
+            if bc_cat is None:
+                log.warning("Category id=%d not found in BC — recreating: %s", existing_id, name)
+            elif bc_cat["name"] != name:
+                log.info("Renaming category id=%d: %r → %r", existing_id, bc_cat["name"], name)
+                client.categories_v3.update(existing_id, data={"name": name})
+                return existing_id
+            else:
+                log.info("Category OK: %s id=%d", name, existing_id)
+                return existing_id
+        # Create new
         result = client.categories_v3.create(data={
-            "name": ELECTRICAL_HARDWARE,
-            "parent_id": 0,
+            "name": name,
+            "parent_id": parent_id,
             "is_visible": False,
             "tree_id": category_tree,
         })
-        electrical_hardware_id = result["id"]
-        log.info(
-            "Created %s root in tree %d: id=%d",
-            ELECTRICAL_HARDWARE,
-            category_tree,
-            electrical_hardware_id,
-        )
+        new_id = result["id"]
+        log.info("Created category: %s id=%d", name, new_id)
+        return new_id
 
-    category_map[ELECTRICAL_HARDWARE] = electrical_hardware_id
-
-    # Ensure Lutron exists under Electrical Hardware
-    existing_lutron = next(
-        (
-            c
-            for c in existing_in_tree
-            if c["name"] == "Lutron" and c.get("parent_id") == electrical_hardware_id
-        ),
-        None,
+    # Root category (e.g. "Electrical Hardware")
+    root_id = _ensure_category(
+        vendor_cfg.ROOT_CATEGORY,
+        parent_id=0,
+        existing_id=category_map.get(vendor_cfg.ROOT_CATEGORY),
     )
-    if existing_lutron:
-        lutron_id = existing_lutron["id"]
-        log.info("Lutron already exists under %s: id=%d", ELECTRICAL_HARDWARE, lutron_id)
-    else:
-        result = client.categories_v3.create(data={
-            "name": "Lutron",
-            "parent_id": electrical_hardware_id,
-            "is_visible": False,
-            "tree_id": category_tree,
-        })
-        lutron_id = result["id"]
-        log.info("Created Lutron under %s: id=%d", ELECTRICAL_HARDWARE, lutron_id)
+    category_map[vendor_cfg.ROOT_CATEGORY] = root_id
 
-    category_map["Lutron"] = lutron_id
+    # Vendor category (e.g. "Lutron") under root
+    vendor_cat_id = _ensure_category(
+        vendor_cfg.VENDOR_CATEGORY,
+        parent_id=root_id,
+        existing_id=category_map.get(vendor_cfg.VENDOR_CATEGORY),
+    )
+    category_map[vendor_cfg.VENDOR_CATEGORY] = vendor_cat_id
 
-    # Ensure each subcategory exists under Lutron
-    for name in LUTRON_SUBCATEGORIES:
-        existing_sub = next(
-            (c for c in existing if c["name"] == name and c["parent_id"] == lutron_id),
-            None,
+    # Subcategories under vendor
+    for name in vendor_cfg.SUBCATEGORIES:
+        sub_id = _ensure_category(
+            name,
+            parent_id=vendor_cat_id,
+            existing_id=category_map.get(name),
         )
-        if existing_sub:
-            sub_id = existing_sub["id"]
-            log.info("Subcategory already exists: %s id=%d", name, sub_id)
-        else:
-            result = client.categories_v3.create(data={
-                "name": name,
-                "parent_id": lutron_id,
-                "is_visible": False,
-                "tree_id": category_tree,
-            })
-            sub_id = result["id"]
-            log.info("Created subcategory: %s id=%d", name, sub_id)
-
         category_map[name] = sub_id
 
     # Write map
-    with open(CATEGORY_MAP_PATH, "w", encoding="utf-8") as f:
+    with open(map_path, "w", encoding="utf-8") as f:
         json.dump(category_map, f, indent=2)
 
-    log.info("Wrote %s with %d entries", CATEGORY_MAP_PATH, len(category_map))
+    log.info("Wrote %s with %d entries", map_path, len(category_map))
 
 
 if __name__ == "__main__":
-    prime_categories()
+    parser = argparse.ArgumentParser(description="Create/verify BC category hierarchy for a vendor")
+    parser.add_argument("--vendor", required=True, help="Vendor name (e.g. lutron)")
+    parser.add_argument("--teardown", action="store_true", help="Delete and recreate the entire tree (WARNING: loses all product category assignments)")
+    args = parser.parse_args()
+
+    try:
+        cfg = importlib.import_module(f"vendors.{args.vendor.lower()}")
+    except ModuleNotFoundError:
+        print(f"ERROR: no vendor config found for '{args.vendor}' (expected vendors/{args.vendor.lower()}.py)")
+        sys.exit(1)
+
+    prime_categories(cfg, teardown=args.teardown)

@@ -15,7 +15,7 @@ from pathlib import Path
 import pandas as pd
 
 from bc.client import BCClient, BATCH_SIZE
-from mappers.field_mapper import map_row
+from mappers import get_mapper
 from readers.xlsx_reader import load_feed
 
 logging.basicConfig(
@@ -59,15 +59,22 @@ def write_warnings_report(rows: list[dict], path: str) -> None:
     log.info("Wrote warnings report: %s (%d rows)", path, len(df))
 
 
-def run(feed_path: str, limit: int | None = None, skus: list[str] | None = None) -> None:
+def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] | None = None) -> None:
     start = time.time()
     log.info("Starting import from %s", feed_path)
 
-    channel_id = int(os.environ["CHANNEL_ID"])
+    mapper = get_mapper(vendor)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log.info("Run ID: %s  Channel: %d", run_id, channel_id)
+    log.info("Run ID: %s  Vendor: %s  Channels: %s", run_id, vendor, mapper.channel_ids)
 
-    feed_df = load_feed(feed_path)
+    feed_df = load_feed(feed_path, mapper.VENDOR_ID, mapper.PRODUCT_TYPES)
+
+    # Run enrichers (in-memory join of supplemental data sources)
+    for enricher_cls in mapper.ENRICHERS:
+        enricher = enricher_cls()
+        log.info("Running enricher: %s", enricher_cls.__name__)
+        feed_df = enricher.enrich(feed_df)
+
     if skus:
         feed_df = feed_df[feed_df["Item Number"].astype(str).isin([str(s) for s in skus])]
         log.info("--sku filter applied: %d row(s) matched", len(feed_df))
@@ -88,7 +95,7 @@ def run(feed_path: str, limit: int | None = None, skus: list[str] | None = None)
 
     for _, row in feed_df.iterrows():
         try:
-            payload = map_row(row)
+            payload = mapper.map_row(row)
             payloads.append(payload)
             raw_rows.append(row.to_dict())
         except Exception as exc:  # pylint: disable=broad-except
@@ -135,10 +142,11 @@ def run(feed_path: str, limit: int | None = None, skus: list[str] | None = None)
                 client.create_product_metafield(product_id, "bcimport", "awsbatch", run_id)
             except Exception as exc:  # pylint: disable=broad-except
                 log.warning("Metafield creation failed for product %d: %s", product_id, exc)
-            try:
-                client.assign_products_to_channel([product_id], channel_id)
-            except Exception as exc:  # pylint: disable=broad-except
-                log.warning("Channel assignment failed for product %d: %s", product_id, exc)
+            for ch_id in mapper.channel_ids:
+                try:
+                    client.assign_products_to_channel([product_id], ch_id)
+                except Exception as exc:  # pylint: disable=broad-except
+                    log.warning("Channel assignment failed for product %d channel %d: %s", product_id, ch_id, exc)
         elif status == 207:
             n_warnings += 1
             warn = raw.copy()
@@ -151,6 +159,27 @@ def run(feed_path: str, limit: int | None = None, skus: list[str] | None = None)
             err["bc_status_code"] = status
             err["bc_error_message"] = _extract_message(body)
             error_rows.append(err)
+
+    # --- Phase 3.5: reconcile custom field IDs for update payloads ---
+    # BC treats custom_fields entries without `id` as creates and rejects
+    # duplicates. Fetch existing field IDs per product and inject them.
+    if updates:
+        log.info("Fetching existing custom fields for %d update product(s)…", len(updates))
+        for payload, _ in updates:
+            product_id = payload["id"]
+            if payload.get("custom_fields"):
+                try:
+                    existing = client.get_product_custom_fields(product_id)
+                    payload["custom_fields"] = _reconcile_custom_fields(
+                        payload["custom_fields"], existing
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    log.warning(
+                        "Could not fetch custom fields for product %d: %s — "
+                        "sending without IDs (may fail on duplicate names)",
+                        product_id,
+                        exc,
+                    )
 
     # --- Phase 4: updates (batch PUT, max BATCH_SIZE per request) ---
     for i in range(0, len(updates), BATCH_SIZE):
@@ -220,6 +249,30 @@ def run(feed_path: str, limit: int | None = None, skus: list[str] | None = None)
     )
 
 
+def _reconcile_custom_fields(
+    payload_fields: list[dict], existing_fields: list[dict]
+) -> list[dict]:
+    """
+    Merge custom field IDs from BC into the payload.
+
+    BC's batch PUT treats custom_fields entries without an `id` as creates and
+    rejects them if a field with the same name already exists on the product.
+    Entries *with* a matching `id` are treated as updates.
+
+    For each field in the payload:
+      - If a field with the same name exists in BC, inject its `id`.
+      - Otherwise, leave as-is (new field to be created).
+    """
+    name_to_id = {f["name"]: f["id"] for f in existing_fields}
+    reconciled = []
+    for field in payload_fields:
+        entry = dict(field)
+        if field["name"] in name_to_id:
+            entry["id"] = name_to_id[field["name"]]
+        reconciled.append(entry)
+    return reconciled
+
+
 def _extract_message(body) -> str:
     """Best-effort extraction of an error message from a BC response body."""
     if isinstance(body, dict):
@@ -237,12 +290,13 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--feed", help="Path to XLSX feed file")
     group.add_argument("--feed-dir", help="Directory containing XLSX feed file(s)")
+    parser.add_argument("--vendor", required=True, help="Vendor name (e.g. lutron)")
     parser.add_argument("--limit", type=int, default=None, help="Cap rows processed (useful for testing)")
     parser.add_argument("--sku", nargs="+", metavar="ITEM_NUMBER", help="Filter to specific Item Numbers from the feed")
     args = parser.parse_args()
 
     feed_path = args.feed if args.feed else find_feed(args.feed_dir)
-    run(feed_path, limit=args.limit, skus=args.sku)
+    run(feed_path, vendor=args.vendor, limit=args.limit, skus=args.sku)
 
 
 if __name__ == "__main__":

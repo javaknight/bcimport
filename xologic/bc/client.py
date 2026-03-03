@@ -152,6 +152,22 @@ class BCClient:
         )
 
     # ------------------------------------------------------------------
+    # Custom fields
+    # ------------------------------------------------------------------
+
+    def get_product_custom_fields(self, product_id: int) -> list[dict]:
+        """
+        Fetch existing custom fields for a product.
+        Returns a list of dicts with keys: id, name, value.
+        """
+        self._throttle()
+        return list(
+            self._client.api_v3.get_many(
+                f"/catalog/products/{product_id}/custom-fields"
+            )
+        )
+
+    # ------------------------------------------------------------------
     # Category helpers (used by prime_categories)
     # ------------------------------------------------------------------
 

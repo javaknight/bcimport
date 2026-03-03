@@ -50,25 +50,31 @@ run-sample:
 	$(MAKE) run-sample-dev
 run-sample-%: venv envfile-% | $(OUTPUT_DIR)
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --sku NLV-600-AL
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --vendor lutron --sku NLV-600-AL
 
 run:
 	$(MAKE) run-dev
 run-%: venv envfile-% | $(OUTPUT_DIR)
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed-dir $(INPUT_DIR)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed-dir $(INPUT_DIR) --vendor lutron
 
-prime-categories:
-	$(MAKE) prime-categories-dev
-prime-categories-%: venv envfile-%
+prime-lutron-categories:
+	$(MAKE) prime-lutron-categories-dev
+prime-lutron-categories-%: venv envfile-%
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/prime_categories.py
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/prime_categories.py --vendor lutron
 
-activate-categories:
-	$(MAKE) activate-categories-dev
-activate-categories-%: venv envfile-%
+prime-teardown-lutron-categories:
+	$(MAKE) prime-teardown-lutron-categories-dev
+prime-teardown-lutron-categories-%: venv envfile-%
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/activate_categories.py
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/prime_categories.py --vendor lutron --teardown
+
+activate-lutron-categories:
+	$(MAKE) activate-lutron-categories-dev
+activate-lutron-categories-%: venv envfile-%
+	$(printTarget)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/activate_categories.py --vendor lutron
 
 poc-metafield:
 	$(MAKE) poc-metafield-dev
@@ -131,6 +137,6 @@ endef
 
 .PHONY: all test lint format black isort \
 	run-sample run \
-	prime-categories activate-categories poc-metafield \
+	prime-lutron-categories prime-teardown-lutron-categories activate-lutron-categories poc-metafield \
 	envfiles clean clean-env clean-all venv \
 	push-config
