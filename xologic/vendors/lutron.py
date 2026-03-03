@@ -13,6 +13,9 @@ CATEGORY_MAP_FILE = "lutron_category_map.json"
 ROOT_CATEGORY = "Electrical Hardware"
 VENDOR_CATEGORY = "Lutron"
 
+# Selling price = My Price * PRICE_MARKUP  (subject to change)
+PRICE_MARKUP = 1.22
+
 SUBCATEGORIES = [
     "Cables",
     "Connectors",

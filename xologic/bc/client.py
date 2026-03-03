@@ -155,16 +155,60 @@ class BCClient:
     # Custom fields
     # ------------------------------------------------------------------
 
-    def get_product_custom_fields(self, product_id: int) -> list[dict]:
+    def get_product_for_update(self, product_id: int) -> dict:
         """
-        Fetch existing custom fields for a product.
-        Returns a list of dicts with keys: id, name, value.
+        Fetch custom_fields, images, and the bcimport/image_urls metafield for
+        a product.  Makes two API calls (product + metafields) counted separately
+        against the rate limit.
+        Returns:
+            {
+                "custom_fields": [...],
+                "images": [...],            # existing BC-hosted images
+                "image_urls_metafield": {"id": int, "value": str} | None,
+            }
         """
         self._throttle()
-        return list(
+        product = self._client.api_v3.get(
+            f"/catalog/products/{product_id}",
+            params={"include": "custom_fields,images"},
+        )
+        image_urls_mf = self.get_product_metafield(product_id, "bcimport", "image_urls")
+        return {
+            "custom_fields": product.get("custom_fields", []),
+            "images": product.get("images", []),
+            "image_urls_metafield": image_urls_mf,
+        }
+
+    def get_product_metafield(
+        self, product_id: int, namespace: str, key: str
+    ) -> dict | None:
+        """Return {id, value} for a product metafield, or None if not found."""
+        self._throttle()
+        results = list(
             self._client.api_v3.get_many(
-                f"/catalog/products/{product_id}/custom-fields"
+                f"/catalog/products/{product_id}/metafields",
+                params={"namespace": namespace, "key": key},
             )
+        )
+        if results:
+            return {"id": results[0]["id"], "value": results[0]["value"]}
+        return None
+
+    def update_product_metafield(
+        self, product_id: int, metafield_id: int, value: str
+    ) -> None:
+        """Update the value of an existing product metafield."""
+        self._throttle()
+        self._client.api_v3.put(
+            f"/catalog/products/{product_id}/metafields/{metafield_id}",
+            data={"value": value},
+        )
+
+    def delete_product_image(self, product_id: int, image_id: int) -> None:
+        """Delete a single product image by ID."""
+        self._throttle()
+        self._client.api_v3.delete(
+            f"/catalog/products/{product_id}/images/{image_id}"
         )
 
     # ------------------------------------------------------------------

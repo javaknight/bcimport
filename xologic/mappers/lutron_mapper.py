@@ -10,7 +10,8 @@ import logging
 import pandas as pd
 
 import vendors.lutron as lutron_cfg
-from mappers.base_mapper import BaseMapper, _str
+from enrichers.lutron_pricing_enricher import LutronPricingEnricher
+from mappers.base_mapper import BaseMapper, _num, _str
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +34,30 @@ class LutronMapper(BaseMapper):
     CATEGORY_MAP_FILE = lutron_cfg.CATEGORY_MAP_FILE
     ROOT_CATEGORY = lutron_cfg.ROOT_CATEGORY
     VENDOR_CATEGORY = lutron_cfg.VENDOR_CATEGORY
-    ENRICHERS = []  # LutronPricingEnricher will be added here when ready
+    ENRICHERS = [LutronPricingEnricher]
+
+    def map_row(self, row: pd.Series) -> dict:
+        payload = super().map_row(row)
+
+        upc = _str(row.get("Pricing-UPC"))
+        if upc:
+            payload["upc"] = upc
+
+        list_price = _num(row.get("Pricing-ListPrice"))
+        if list_price is not None:
+            payload["retail_price"] = list_price
+
+        my_price = _num(row.get("Pricing-MyPrice"))
+        if my_price is not None:
+            payload["cost_price"] = my_price
+            payload["price"] = round(my_price * lutron_cfg.PRICE_MARKUP, 2)
+
+        if not payload.get("price"):
+            raise ValueError(
+                f"No pricing data for Item Number {row['Item Number']} — skipped"
+            )
+
+        return payload
 
     def _build_description(self, row: pd.Series) -> str:
         """Short Description + pre-built link fields + Spec Sheet (raw URL) + UNSPSC."""

@@ -80,7 +80,7 @@ class BaseMapper:
             "name": _str(row.get("Item Name")) or sku,
             "type": "physical",
             "is_visible": False,
-            "price": 0,        # TODO: cost * 1.225
+            "price": 0,        # default; overridden by mapper subclass if pricing data available
             "weight": _num(row.get("Extra-Weight")) or 0,
             "mpn": str(row["Item Number"]),
             "description": self._build_description(row),

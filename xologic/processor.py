@@ -6,6 +6,7 @@ Usage:
     python processor.py --feed path/to/feed.xlsx
 """
 import argparse
+import json
 import logging
 import os
 import time
@@ -70,8 +71,9 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     feed_df = load_feed(feed_path, mapper.VENDOR_ID, mapper.PRODUCT_TYPES)
 
     # Run enrichers (in-memory join of supplemental data sources)
+    feed_dir = os.path.dirname(os.path.abspath(feed_path))
     for enricher_cls in mapper.ENRICHERS:
-        enricher = enricher_cls()
+        enricher = enricher_cls(feed_dir=feed_dir)
         log.info("Running enricher: %s", enricher_cls.__name__)
         feed_df = enricher.enrich(feed_df)
 
@@ -142,6 +144,19 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
                 client.create_product_metafield(product_id, "bcimport", "awsbatch", run_id)
             except Exception as exc:  # pylint: disable=broad-except
                 log.warning("Metafield creation failed for product %d: %s", product_id, exc)
+            feed_image_urls = sorted(
+                img["image_url"]
+                for img in payload.get("images", [])
+                if img.get("image_url")
+            )
+            if feed_image_urls:
+                try:
+                    client.create_product_metafield(
+                        product_id, "bcimport", "image_urls",
+                        json.dumps(feed_image_urls),
+                    )
+                except Exception as exc:  # pylint: disable=broad-except
+                    log.warning("image_urls metafield creation failed for product %d: %s", product_id, exc)
             for ch_id in mapper.channel_ids:
                 try:
                     client.assign_products_to_channel([product_id], ch_id)
@@ -160,26 +175,65 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
             err["bc_error_message"] = _extract_message(body)
             error_rows.append(err)
 
-    # --- Phase 3.5: reconcile custom field IDs for update payloads ---
-    # BC treats custom_fields entries without `id` as creates and rejects
-    # duplicates. Fetch existing field IDs per product and inject them.
+    # --- Phase 3.5: reconcile custom fields + image URL tracking for updates ---
+    # One combined GET per product fetches custom_fields, images, and the
+    # bcimport/image_urls metafield.
+    #
+    # custom_fields: inject existing IDs so BC treats them as updates, not creates.
+    #
+    # images: compare stored URL set (metafield) against feed URL set:
+    #   - identical  → skip images in payload (no-op, no duplicate)
+    #   - different  → delete all existing BC images now; keep images in payload
+    #                  so BC re-uploads them; queue a metafield write for after
+    #                  the batch PUT succeeds.
+    #   - no metafield yet (first update after the fix) → treat as "changed"
+    image_url_changes: dict[int, dict] = {}  # product_id → {metafield_id, new_value}
+
     if updates:
-        log.info("Fetching existing custom fields for %d update product(s)…", len(updates))
+        log.info("Fetching existing product data for %d update product(s)…", len(updates))
         for payload, _ in updates:
             product_id = payload["id"]
-            if payload.get("custom_fields"):
-                try:
-                    existing = client.get_product_custom_fields(product_id)
+            try:
+                existing = client.get_product_for_update(product_id)
+
+                if payload.get("custom_fields"):
                     payload["custom_fields"] = _reconcile_custom_fields(
-                        payload["custom_fields"], existing
+                        payload["custom_fields"], existing["custom_fields"]
                     )
-                except Exception as exc:  # pylint: disable=broad-except
-                    log.warning(
-                        "Could not fetch custom fields for product %d: %s — "
-                        "sending without IDs (may fail on duplicate names)",
-                        product_id,
-                        exc,
-                    )
+
+                feed_image_urls = sorted(
+                    img["image_url"]
+                    for img in payload.get("images", [])
+                    if img.get("image_url")
+                )
+                mf = existing.get("image_urls_metafield")
+                stored_image_urls = sorted(json.loads(mf["value"])) if mf else []
+
+                if feed_image_urls == stored_image_urls:
+                    # No change — skip images to avoid BC appending duplicates
+                    payload.pop("images", None)
+                elif feed_image_urls:
+                    # URLs changed — delete existing BC images now, re-upload via payload
+                    for bc_img in existing["images"]:
+                        try:
+                            client.delete_product_image(product_id, bc_img["id"])
+                        except Exception as exc:  # pylint: disable=broad-except
+                            log.warning(
+                                "Could not delete image %d for product %d: %s",
+                                bc_img["id"], product_id, exc,
+                            )
+                    image_url_changes[product_id] = {
+                        "metafield_id": mf["id"] if mf else None,
+                        "new_value": json.dumps(sorted(feed_image_urls)),
+                    }
+
+            except Exception as exc:  # pylint: disable=broad-except
+                log.warning(
+                    "Could not fetch product data for %d: %s — "
+                    "sending without reconciliation (custom fields may fail; images may duplicate)",
+                    product_id,
+                    exc,
+                )
 
     # --- Phase 4: updates (batch PUT, max BATCH_SIZE per request) ---
     for i in range(0, len(updates), BATCH_SIZE):
@@ -191,6 +245,24 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
 
         if status == 200:
             n_success += len(batch)
+            for p, _ in batch:
+                pid = p["id"]
+                if pid in image_url_changes:
+                    change = image_url_changes[pid]
+                    try:
+                        if change["metafield_id"] is not None:
+                            client.update_product_metafield(
+                                pid, change["metafield_id"], change["new_value"]
+                            )
+                        else:
+                            client.create_product_metafield(
+                                pid, "bcimport", "image_urls", change["new_value"]
+                            )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        log.warning(
+                            "image_urls metafield update failed for product %d: %s",
+                            pid, exc,
+                        )
         elif status == 207:
             # Partial success — determine per-item results if available
             results = body.get("data", []) if isinstance(body, dict) else []

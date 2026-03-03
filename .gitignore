@@ -20,3 +20,6 @@ __pycache__/
 
 # Unwanted excel artifacts
 ~$*.xlsx
+
+# Unwanted Microsoft artifacts
+*Zone.Identifier

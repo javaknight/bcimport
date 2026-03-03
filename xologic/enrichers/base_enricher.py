@@ -14,6 +14,9 @@ class BaseEnricher(ABC):
     avoid shadowing XOlogic columns.  If a conflict does occur, a warning is logged.
     """
 
+    def __init__(self, feed_dir: str | None = None) -> None:
+        self.feed_dir = feed_dir
+
     @abstractmethod
     def enrich(self, df: pd.DataFrame) -> pd.DataFrame:
         """Merge supplemental data onto df and return the enriched DataFrame."""
