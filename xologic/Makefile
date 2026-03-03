@@ -48,13 +48,13 @@ isort: venv
 
 run-sample:
 	$(MAKE) run-sample-dev
-run-sample-%: venv envfiles | $(OUTPUT_DIR)
+run-sample-%: venv envfile-% | $(OUTPUT_DIR)
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --sku NLV-600-AL
 
 run:
 	$(MAKE) run-dev
-run-%: venv envfiles | $(OUTPUT_DIR)
+run-%: venv envfile-% | $(OUTPUT_DIR)
 	$(printTarget)
 	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed-dir $(INPUT_DIR)
 
@@ -66,9 +66,16 @@ prime-categories-%: venv envfile-%
 
 activate-categories:
 	$(MAKE) activate-categories-dev
-activate-categories-%: venv envfiles
+activate-categories-%: venv envfile-%
 	$(printTarget)
 	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/activate_categories.py
+
+poc-metafield:
+	$(MAKE) poc-metafield-dev
+poc-metafield-%: venv envfile-%
+	$(printTarget)
+	@test -n "$(PRODUCT_ID)" || (echo "Usage: make poc-metafield PRODUCT_ID=<bc_product_id>" && exit 1)
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/poc_metafield_search.py --product-id $(PRODUCT_ID)
 
 clean:
 	$(printTarget)
@@ -124,6 +131,6 @@ endef
 
 .PHONY: all test lint format black isort \
 	run-sample run \
-	prime-categories activate-categories \
+	prime-categories activate-categories poc-metafield \
 	envfiles clean clean-env clean-all venv \
 	push-config

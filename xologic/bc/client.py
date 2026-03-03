@@ -102,6 +102,56 @@ class BCClient:
             return exc.status_code, {"errors": exc.errors}
 
     # ------------------------------------------------------------------
+    # Metafields
+    # ------------------------------------------------------------------
+
+    def create_product_metafield(
+        self, product_id: int, namespace: str, key: str, value: str
+    ) -> None:
+        """Attach a metafield to a product."""
+        self._throttle()
+        self._client.api_v3.post(
+            f"/catalog/products/{product_id}/metafields",
+            data={
+                "namespace": namespace,
+                "key": key,
+                "value": value,
+                "permission_set": "read",
+            },
+        )
+
+    def search_products_by_metafield(
+        self, namespace: str, key: str, value: str
+    ) -> list[dict]:
+        """Search all product metafields by namespace + key + value.
+
+        Returns raw metafield records; each record has resource_id = product_id.
+        """
+        self._throttle()
+        return list(
+            self._client.api_v3.get_many(
+                "/catalog/products/metafields",
+                params={"namespace": namespace, "key": key, "value": value},
+            )
+        )
+
+    # ------------------------------------------------------------------
+    # Channel assignment
+    # ------------------------------------------------------------------
+
+    def assign_products_to_channel(
+        self, product_ids: list[int], channel_id: int
+    ) -> None:
+        """Assign products to a storefront channel."""
+        assignments = [
+            {"product_id": pid, "channel_id": channel_id} for pid in product_ids
+        ]
+        self._throttle()
+        self._client.api_v3.put(
+            "/catalog/products/channel-assignments", data=assignments
+        )
+
+    # ------------------------------------------------------------------
     # Category helpers (used by prime_categories)
     # ------------------------------------------------------------------
 

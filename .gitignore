@@ -17,3 +17,6 @@ __pycache__/
 
 # VSCode settings
 .vscode/
+
+# Unwanted excel artifacts
+~$*.xlsx

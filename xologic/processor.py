@@ -9,6 +9,7 @@ import argparse
 import logging
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -58,11 +59,21 @@ def write_warnings_report(rows: list[dict], path: str) -> None:
     log.info("Wrote warnings report: %s (%d rows)", path, len(df))
 
 
-def run(feed_path: str) -> None:
+def run(feed_path: str, limit: int | None = None, skus: list[str] | None = None) -> None:
     start = time.time()
     log.info("Starting import from %s", feed_path)
 
+    channel_id = int(os.environ["CHANNEL_ID"])
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log.info("Run ID: %s  Channel: %d", run_id, channel_id)
+
     feed_df = load_feed(feed_path)
+    if skus:
+        feed_df = feed_df[feed_df["Item Number"].astype(str).isin([str(s) for s in skus])]
+        log.info("--sku filter applied: %d row(s) matched", len(feed_df))
+    if limit is not None:
+        feed_df = feed_df.head(limit)
+        log.info("--limit %d applied", limit)
     total = len(feed_df)
     log.info("Feed loaded: %d rows after filtering", total)
 
@@ -119,6 +130,15 @@ def run(feed_path: str) -> None:
         status, body = client.create_product(payload)
         if status == 200:
             n_success += 1
+            product_id = body["id"]
+            try:
+                client.create_product_metafield(product_id, "bcimport", "awsbatch", run_id)
+            except Exception as exc:  # pylint: disable=broad-except
+                log.warning("Metafield creation failed for product %d: %s", product_id, exc)
+            try:
+                client.assign_products_to_channel([product_id], channel_id)
+            except Exception as exc:  # pylint: disable=broad-except
+                log.warning("Channel assignment failed for product %d: %s", product_id, exc)
         elif status == 207:
             n_warnings += 1
             warn = raw.copy()
@@ -217,10 +237,12 @@ def main() -> None:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--feed", help="Path to XLSX feed file")
     group.add_argument("--feed-dir", help="Directory containing XLSX feed file(s)")
+    parser.add_argument("--limit", type=int, default=None, help="Cap rows processed (useful for testing)")
+    parser.add_argument("--sku", nargs="+", metavar="ITEM_NUMBER", help="Filter to specific Item Numbers from the feed")
     args = parser.parse_args()
 
     feed_path = args.feed if args.feed else find_feed(args.feed_dir)
-    run(feed_path)
+    run(feed_path, limit=args.limit, skus=args.sku)
 
 
 if __name__ == "__main__":

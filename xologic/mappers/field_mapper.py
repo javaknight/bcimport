@@ -46,22 +46,31 @@ def _num(value: Any) -> float | None:
 
 
 def _build_description(row: pd.Series) -> str:
-    """Build description HTML: Short Description + appended link/text lines."""
+    """Build description HTML: Short Description + appended link/text lines.
+
+    Link field cells already contain complete anchor tags (e.g.
+    '<a href="https://...">Spec Sheet</a>'), so their values are appended
+    as-is without any additional wrapping.
+    """
     parts = [_str(row.get("Short Description")) or ""]
 
-    link_fields = {
-        "Extra-Installation Link": "Installation",
-        "Extra-Line Drawing Link": "Line Drawing",
-        "Extra-Spec Sheet": "Spec Sheet",
-        "Extra-Tech Drawing Link": "Tech Drawing",
-        "Extra-Warranty Link": "Warranty",
-        "Extra-Brochure": "Brochure",
-        "Extra-Video Clip": "Video",
-    }
-    for col, label in link_fields.items():
-        url = _str(row.get(col))
-        if url:
-            parts.append(f'<a href="{url}">{label}</a>')
+    link_fields = [
+        "Extra-Installation Link",
+        "Extra-Line Drawing Link",
+        "Extra-Tech Drawing Link",
+        "Extra-Warranty Link",
+        "Extra-Brochure",
+        "Extra-Video Clip",
+    ]
+    for col in link_fields:
+        val = _str(row.get(col))
+        if val:
+            parts.append(val)
+
+    # Extra-Spec Sheet contains a raw URL (not a pre-built anchor tag)
+    spec_url = _str(row.get("Extra-Spec Sheet"))
+    if spec_url:
+        parts.append(f'<a href="{spec_url}">Spec Sheet</a>')
 
     unspsc = _str(row.get("Extra-UNSPSC"))
     if unspsc:
@@ -97,11 +106,18 @@ def _build_images(row: pd.Series) -> list[dict]:
 
 
 def _build_categories(row: pd.Series) -> list[int]:
-    """Resolve category IDs from category_map.json."""
+    """Resolve category IDs from category_map.json.
+
+    Tags the product at all three levels: Electrical Hardware, Lutron, and the
+    Standard-Subcategory leaf. Missing subcategory is logged and skipped.
+    """
     cat_map = _load_category_map()
     ids = []
 
-    # Always include the Lutron parent
+    electrical_hardware_id = cat_map.get("Electrical Hardware")
+    if electrical_hardware_id:
+        ids.append(electrical_hardware_id)
+
     lutron_id = cat_map.get("Lutron")
     if lutron_id:
         ids.append(lutron_id)
@@ -121,18 +137,25 @@ def map_row(row: pd.Series) -> dict:
     """
     Map one XOlogic feed row to a BigCommerce product payload.
     Returns a dict ready to POST or PUT to the BC API.
+    Raises ValueError if the row is missing required fields (e.g. image).
     """
     sku = f"LU-{row['Item Number']}"
+
+    images = _build_images(row)
+    if not images:
+        raise ValueError(f"No image URL — row skipped (Item Number: {row['Item Number']})")
 
     payload: dict = {
         "sku": sku,
         "name": _str(row.get("Item Name")) or sku,
         "type": "physical",
-        "price": 0,        # price not in scope for this feed; set to 0
+        "is_visible": False,
+        "price": 0,        # price not in scope; set to 0 (TODO: cost * 1.225)
         "weight": _num(row.get("Extra-Weight")) or 0,
+        "mpn": str(row["Item Number"]),
         "description": _build_description(row),
         "custom_fields": _build_custom_fields(row),
-        "images": _build_images(row),
+        "images": images,
         "categories": _build_categories(row),
     }
 
