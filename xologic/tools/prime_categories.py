@@ -93,18 +93,16 @@ def prime_categories(vendor_cfg, teardown: bool = False) -> None:
     def _ensure_category(
         name: str, parent_id: int, existing_id: int | None
     ) -> int:
-        """Return BC category ID, creating or updating as needed."""
+        """Return BC category ID, creating it if not already present.
+
+        If the category already exists in BC (by ID), it is left completely
+        untouched — name changes made by humans in the BC admin are preserved.
+        """
         if existing_id is not None:
-            bc_cat = existing_by_id.get(existing_id)
-            if bc_cat is None:
-                log.warning("Category id=%d not found in BC — recreating: %s", existing_id, name)
-            elif bc_cat["name"] != name:
-                log.info("Renaming category id=%d: %r → %r", existing_id, bc_cat["name"], name)
-                client.categories_v3.update(existing_id, data={"name": name})
+            if existing_id in existing_by_id:
+                log.info("Category OK: id=%d (BC name: %r)", existing_id, existing_by_id[existing_id]["name"])
                 return existing_id
-            else:
-                log.info("Category OK: %s id=%d", name, existing_id)
-                return existing_id
+            log.warning("Category id=%d not found in BC — recreating: %s", existing_id, name)
         # Create new
         result = client.categories_v3.create(data={
             "name": name,

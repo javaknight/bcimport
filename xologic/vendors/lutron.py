@@ -10,7 +10,7 @@ SKU_PREFIX = "LU-"
 BRAND_ID = 45
 
 CATEGORY_MAP_FILE = "lutron_category_map.json"
-ROOT_CATEGORY = "Electrical Hardware"
+ROOT_CATEGORY = "Electrical"
 VENDOR_CATEGORY = "Lutron"
 
 # Selling price = My Price * PRICE_MARKUP  (subject to change)
