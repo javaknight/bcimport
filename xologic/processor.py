@@ -189,6 +189,7 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     #                  the batch PUT succeeds.
     #   - no metafield yet (first update after the fix) → treat as "changed"
     image_url_changes: dict[int, dict] = {}  # product_id → {metafield_id, new_value}
+    awsbatch_missing: set[int] = set()        # product_ids where awsbatch metafield is absent
 
     if updates:
         log.info("Fetching existing product data for %d update product(s)…", len(updates))
@@ -201,6 +202,9 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
                     payload["custom_fields"] = _reconcile_custom_fields(
                         payload["custom_fields"], existing["custom_fields"]
                     )
+
+                if existing.get("awsbatch_metafield") is None:
+                    awsbatch_missing.add(product_id)
 
                 feed_image_urls = sorted(
                     img["image_url"]
@@ -248,6 +252,11 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
             n_success += len(batch)
             for p, _ in batch:
                 pid = p["id"]
+                if pid in awsbatch_missing:
+                    try:
+                        client.create_product_metafield(pid, "bcimport", "awsbatch", run_id)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        log.warning("awsbatch backfill failed for product %d: %s", pid, exc)
                 if pid in image_url_changes:
                     change = image_url_changes[pid]
                     try:

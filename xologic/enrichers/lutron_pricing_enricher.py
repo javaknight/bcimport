@@ -38,13 +38,10 @@ class LutronPricingEnricher(BaseEnricher):
     def enrich(self, df: pd.DataFrame) -> pd.DataFrame:
         pricing_path = self._find_pricing_file()
         if pricing_path is None:
-            log.warning(
-                "LutronPricingEnricher: no file matching '%s' found in %s — "
-                "pricing columns will be absent",
-                self.FILENAME_PATTERN,
-                self.feed_dir,
+            raise FileNotFoundError(
+                f"Lutron pricing file not found — expected '{self.FILENAME_PATTERN}' "
+                f"in {self.feed_dir}. Place the pricing XLSX there and re-run."
             )
-            return df
 
         log.info("LutronPricingEnricher: loading %s", pricing_path)
         pricing_df = pd.read_excel(pricing_path, engine="calamine", dtype=str)

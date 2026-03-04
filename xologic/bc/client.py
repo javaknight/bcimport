@@ -52,19 +52,26 @@ class BCClient:
     def lookup_skus(self, skus: list[str]) -> dict[str, int]:
         """
         Return a mapping of {sku: bc_id} for all SKUs that exist in BC.
-        Paginates through results in chunks of 250.
+        Sends SKUs in chunks to stay within URL length limits.
         """
         found: dict[str, int] = {}
-        chunk_size = 250
+        chunk_size = 50
 
         for i in range(0, len(skus), chunk_size):
             chunk = skus[i : i + chunk_size]
             sku_csv = ",".join(chunk)
             self._throttle()
-            for product in self._client.products_v3.all(
-                params={"sku:in": sku_csv, "include_fields": "id,sku"},
-            ):
-                found[product["sku"]] = product["id"]
+            try:
+                for product in self._client.products_v3.all(
+                    params={"sku:in": sku_csv, "include_fields": "id,sku"},
+                ):
+                    found[product["sku"]] = product["id"]
+            except BigCommerceException as exc:
+                log.error(
+                    "SKU lookup failed for chunk %d-%d (status %s): %s",
+                    i, i + len(chunk), exc.status_code, exc.errors,
+                )
+                raise
 
         log.info("SKU lookup: %d/%d found in BC", len(found), len(skus))
         return found
@@ -125,15 +132,17 @@ class BCClient:
     ) -> list[dict]:
         """Search all product metafields by namespace + key + value.
 
+        The BC bulk metafields endpoint supports filtering by namespace and key
+        (and key:in), but not by value. Value filtering is done client-side.
+
         Returns raw metafield records; each record has resource_id = product_id.
         """
         self._throttle()
-        return list(
-            self._client.api_v3.get_many(
-                "/catalog/products/metafields",
-                params={"namespace": namespace, "key": key, "value": value},
-            )
+        all_records = self._client.api_v3.get_many(
+            "/catalog/products/metafields",
+            params={"namespace": namespace, "key": key},
         )
+        return [mf for mf in all_records if mf.get("value") == value]
 
     # ------------------------------------------------------------------
     # Channel assignment
@@ -157,14 +166,14 @@ class BCClient:
 
     def get_product_for_update(self, product_id: int) -> dict:
         """
-        Fetch custom_fields, images, and the bcimport/image_urls metafield for
-        a product.  Makes two API calls (product + metafields) counted separately
-        against the rate limit.
+        Fetch custom_fields, images, and all bcimport namespace metafields for
+        a product in two API calls.
         Returns:
             {
                 "custom_fields": [...],
-                "images": [...],            # existing BC-hosted images
+                "images": [...],
                 "image_urls_metafield": {"id": int, "value": str} | None,
+                "awsbatch_metafield":   {"id": int, "value": str} | None,
             }
         """
         self._throttle()
@@ -172,11 +181,20 @@ class BCClient:
             f"/catalog/products/{product_id}",
             params={"include": "custom_fields,images"},
         )
-        image_urls_mf = self.get_product_metafield(product_id, "bcimport", "image_urls")
+        # Fetch all bcimport metafields in one call
+        self._throttle()
+        all_mf = list(
+            self._client.api_v3.get_many(
+                f"/catalog/products/{product_id}/metafields",
+                params={"namespace": "bcimport"},
+            )
+        )
+        mf_by_key = {m["key"]: {"id": m["id"], "value": m["value"]} for m in all_mf}
         return {
             "custom_fields": product.get("custom_fields", []),
             "images": product.get("images", []),
-            "image_urls_metafield": image_urls_mf,
+            "image_urls_metafield": mf_by_key.get("image_urls"),
+            "awsbatch_metafield": mf_by_key.get("awsbatch"),
         }
 
     def get_product_metafield(

@@ -8,6 +8,9 @@ xologic/env/.env.*
 xologic/logs/
 xologic/output/
 
+# Runtime input
+xologic/input/
+
 # Python
 __pycache__/
 *.pyc
