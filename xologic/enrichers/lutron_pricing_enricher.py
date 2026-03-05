@@ -5,7 +5,7 @@ XOlogic DataFrame by Item Number.
 
 Added columns:
     Pricing-UPC        ← UPC Code
-    Pricing-ListPrice  ← List Price  (→ BC retail_price)
+    Pricing-ListPrice  ← List Price
     Pricing-MyPrice    ← My Price    (→ BC cost_price; price = MyPrice * PRICE_MARKUP)
 
 Pricing file columns (row 1 = headers):

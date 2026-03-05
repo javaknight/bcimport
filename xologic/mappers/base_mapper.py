@@ -31,6 +31,9 @@ class BaseMapper:
     # --- Optional vendor configuration ---
     BRAND_ID: ClassVar[int | None] = None
     ENRICHERS: ClassVar[list] = []  # list of BaseEnricher subclasses to run before mapping
+    SKIP_ITEM_NUMBERS: ClassVar[frozenset[str]] = frozenset()
+    PDF_DAV_SUBDIR: ClassVar[str | None] = None
+    PDF_LINK_COLUMNS: ClassVar[list[str]] = []
 
     # --- Per-instance category map cache ---
     _category_map: dict | None = None
@@ -43,9 +46,11 @@ class BaseMapper:
     def channel_ids(self) -> list[int]:
         """Return BC channel IDs to assign products to after creation.
 
-        Override in a subclass for multiple channels or different env var names.
+        Reads CHANNEL_IDS (comma-separated) from env. Override in a subclass
+        for vendor-specific channel configuration.
         """
-        return [int(os.environ["CHANNEL_ID"])]
+        raw = os.environ.get("CHANNEL_IDS", os.environ.get("CHANNEL_ID", "1"))
+        return [int(c.strip()) for c in raw.split(",") if c.strip()]
 
     # ------------------------------------------------------------------
     # Category map
@@ -69,7 +74,7 @@ class BaseMapper:
 
         Raises ValueError if the row is missing required fields (e.g. image).
         """
-        sku = f"{self.SKU_PREFIX}{row['Item Number']}"
+        sku = build_sku(self.SKU_PREFIX, str(row["Item Number"]))
 
         images = self._build_images(row)
         if not images:
@@ -81,6 +86,7 @@ class BaseMapper:
             "type": "physical",
             "is_visible": False,
             "price": 0,        # default; overridden by mapper subclass if pricing data available
+            "retail_price": 0, # always explicitly cleared; set by subclass only if MSRP is desired
             "weight": _num(row.get("Extra-Weight")) or 0,
             "mpn": str(row["Item Number"]),
             "description": self._build_description(row),
@@ -104,11 +110,21 @@ class BaseMapper:
         if height is not None:
             payload["height"] = height
 
+        for img in payload["images"]:
+            img["description"] = payload["name"]
+
         return payload
 
     # ------------------------------------------------------------------
     # Overrideable build helpers
     # ------------------------------------------------------------------
+
+    def build_price_patch(self, row: pd.Series) -> dict | None:  # pylint: disable=unused-argument
+        """Return {price, cost_price} for a human-created product price patch, or None.
+
+        Override in vendor subclasses that have computable pricing.
+        """
+        return None
 
     def _build_description(self, row: pd.Series) -> str:
         """Build description HTML. Override per vendor as needed."""
@@ -122,7 +138,7 @@ class BaseMapper:
         """Build custom_fields array. Override per vendor as needed."""
         fields: list[dict] = []
         finish = _str(row.get("Variant-Finish")) or _str(row.get("Standard-Finish"))
-        _add_field(fields, "Finish", finish)
+        _add_field(fields, "Color/ Finish", finish)
         _add_field(fields, "Style", _str(row.get("Standard-Style")))
         _add_field(fields, "Length", _str(row.get("Extra-Length")))
         return fields
@@ -187,3 +203,26 @@ def _add_field(fields: list[dict], name: str, value: str | None) -> None:
     """Append a custom field dict if value is non-empty."""
     if value:
         fields.append({"name": name, "value": value})
+
+
+MAX_SKU_LENGTH = 30
+
+
+def build_sku(prefix: str, item_number: str) -> str:
+    """Build a BC/Acumatica-safe SKU capped at MAX_SKU_LENGTH characters.
+
+    Strategy:
+    1. {prefix}{item_number}                     — if <= 15, use as-is
+    2. {prefix}{item_number with hyphens removed} — if <= 15, use stripped form
+    3. Raise ValueError                           — row goes to error report
+    """
+    raw = f"{prefix}{item_number}"
+    if len(raw) <= MAX_SKU_LENGTH:
+        return raw
+    stripped = f"{prefix}{item_number.replace('-', '')}"
+    if len(stripped) <= MAX_SKU_LENGTH:
+        return stripped
+    raise ValueError(
+        f"SKU too long (>{MAX_SKU_LENGTH} chars) even after stripping hyphens: "
+        f"{raw!r} -> {stripped!r}"
+    )

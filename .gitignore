@@ -26,3 +26,6 @@ __pycache__/
 
 # Unwanted Microsoft artifacts
 *Zone.Identifier
+
+# Other files I don't want to commit right now
+xologic/samplefeed/Lutron-data.csv

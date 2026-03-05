@@ -6,6 +6,7 @@ Usage:
     python processor.py --feed path/to/feed.xlsx
 """
 import argparse
+import fnmatch
 import json
 import logging
 import os
@@ -16,8 +17,9 @@ from pathlib import Path
 import pandas as pd
 
 from bc.client import BCClient, BATCH_SIZE
-from mappers import get_mapper
+from mappers import get_mapper, get_mapper_class
 from readers.xlsx_reader import load_feed
+from utilities.pdf_mirror import mirror_feed_pdfs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,13 +32,40 @@ ERROR_FILE = os.path.join(OUTPUT_DIR, "error_items.xlsx")
 WARNINGS_FILE = os.path.join(OUTPUT_DIR, "warnings.xlsx")
 
 
-def find_feed(feed_dir: str) -> str:
-    """Return the first .xlsx file in feed_dir."""
-    candidates = sorted(Path(feed_dir).glob("*.xlsx"))
-    if not candidates:
+def find_feed(feed_dir: str, enricher_classes: list | None = None) -> str:
+    """Return the product feed .xlsx in feed_dir.
+
+    Files matching any enricher's FILENAME_PATTERN are excluded so they are
+    never mistaken for the product feed. Raises if zero or multiple candidates
+    remain after exclusion.
+    """
+    all_xlsx = sorted(Path(feed_dir).glob("*.xlsx"))
+    if not all_xlsx:
         raise FileNotFoundError(f"No .xlsx files found in {feed_dir}")
+
+    enricher_patterns = [
+        getattr(cls, "FILENAME_PATTERN", None)
+        for cls in (enricher_classes or [])
+    ]
+    enricher_patterns = [p for p in enricher_patterns if p]
+
+    candidates = [
+        p for p in all_xlsx
+        if not any(fnmatch.fnmatch(p.name, pat) for pat in enricher_patterns)
+    ]
+
+    excluded = set(all_xlsx) - set(candidates)
+    for p in excluded:
+        log.info("find_feed: ignoring enricher file %s", p.name)
+
+    if not candidates:
+        raise FileNotFoundError(f"No product feed found in {feed_dir} (all .xlsx files are enricher inputs)")
     if len(candidates) > 1:
-        log.warning("Multiple feeds found in %s; using %s", feed_dir, candidates[0])
+        names = [p.name for p in candidates]
+        raise FileNotFoundError(
+            f"Ambiguous product feed in {feed_dir} — {len(candidates)} unrecognised files: {names}. "
+            "Remove extras or pass --feed explicitly."
+        )
     return str(candidates[0])
 
 
@@ -60,13 +89,25 @@ def write_warnings_report(rows: list[dict], path: str) -> None:
     log.info("Wrote warnings report: %s (%d rows)", path, len(df))
 
 
-def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] | None = None) -> None:
+def run(
+    feed_path: str,
+    vendor: str,
+    limit: int | None = None,
+    skus: list[str] | None = None,
+    update_categories: bool = False,
+) -> None:
     start = time.time()
     log.info("Starting import from %s", feed_path)
 
     mapper = get_mapper(vendor)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    log.info("Run ID: %s  Vendor: %s  Channels: %s", run_id, vendor, mapper.channel_ids)
+    log.info(
+        "Run ID: %s  Vendor: %s  Channels: %s  Update categories: %s",
+        run_id,
+        vendor,
+        mapper.channel_ids,
+        update_categories,
+    )
 
     feed_df = load_feed(feed_path, mapper.VENDOR_ID, mapper.PRODUCT_TYPES)
 
@@ -83,6 +124,37 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     if limit is not None:
         feed_df = feed_df.head(limit)
         log.info("--limit %d applied", limit)
+
+    link_columns = list(getattr(mapper, "PDF_LINK_COLUMNS", []))
+    dav_subdir = getattr(mapper, "PDF_DAV_SUBDIR", None)
+    if dav_subdir and link_columns:
+        log.info(
+            "Mirroring PDF assets to BC WebDAV for %d row(s) using /content/%s",
+            len(feed_df),
+            dav_subdir,
+        )
+        mirror_feed_pdfs(
+            feed_df=feed_df,
+            link_columns=link_columns,
+            dav_subdir=dav_subdir,
+        )
+
+    # --- Phase 0: handle human-created (skipped) items ---
+    # These are not imported via our SKU scheme; instead we patch their pricing
+    # on the existing BC product found via MPN lookup.
+    client = BCClient()
+    skip_item_numbers = getattr(mapper, "SKIP_ITEM_NUMBERS", frozenset())
+    if skip_item_numbers:
+        skip_mask = feed_df["Item Number"].astype(str).isin(skip_item_numbers)
+        skip_df = feed_df[skip_mask]
+        feed_df = feed_df[~skip_mask].reset_index(drop=True)
+        if not skip_df.empty:
+            log.info(
+                "%d human-created item(s) found in feed — skipping import, patching pricing via MPN",
+                len(skip_df),
+            )
+            _patch_human_pricing(skip_df, mapper, client)
+
     total = len(feed_df)
     log.info("Feed loaded: %d rows after filtering", total)
 
@@ -110,7 +182,6 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     log.info("Mapped %d/%d rows (%d mapping errors)", len(payloads), total, len(map_errors))
 
     # --- Phase 2: SKU lookup to split creates vs updates ---
-    client = BCClient()
     skus = [p["sku"] for p in payloads]
     sku_to_id = client.lookup_skus(skus)
     log.info("SKU lookup: %d existing products found", len(sku_to_id))
@@ -123,6 +194,8 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
         if sku in sku_to_id:
             payload["id"] = sku_to_id[sku]
             payload.pop("is_visible", None)  # never override visibility on updates
+            if not update_categories:
+                payload.pop("categories", None)  # preserve human-recategorized BC categories
             updates.append((payload, raw))
         else:
             creates.append((payload, raw))
@@ -189,6 +262,7 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     #                  the batch PUT succeeds.
     #   - no metafield yet (first update after the fix) → treat as "changed"
     image_url_changes: dict[int, dict] = {}  # product_id → {metafield_id, new_value}
+    image_desc_patches: dict[int, list[tuple[int, str]]] = {}  # product_id → [(image_id, description)]
     awsbatch_missing: set[int] = set()        # product_ids where awsbatch metafield is absent
 
     if updates:
@@ -215,7 +289,16 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
                 stored_image_urls = sorted(json.loads(mf["value"])) if mf else []
 
                 if feed_image_urls == stored_image_urls:
-                    # No change — skip images to avoid BC appending duplicates
+                    # URLs unchanged — skip payload images to avoid BC appending duplicates.
+                    # But still patch alt-text (description) on existing BC images if stale.
+                    expected_desc = payload.get("name", "")
+                    patches = [
+                        (bc_img["id"], expected_desc)
+                        for bc_img in existing["images"]
+                        if bc_img.get("description") != expected_desc
+                    ]
+                    if patches:
+                        image_desc_patches[product_id] = patches
                     payload.pop("images", None)
                 elif feed_image_urls:
                     # URLs changed — delete existing BC images now, re-upload via payload
@@ -273,6 +356,15 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
                             "image_urls metafield update failed for product %d: %s",
                             pid, exc,
                         )
+                if pid in image_desc_patches:
+                    for img_id, desc in image_desc_patches[pid]:
+                        try:
+                            client.update_product_image(pid, img_id, description=desc)
+                        except Exception as exc:  # pylint: disable=broad-except
+                            log.warning(
+                                "Image alt-text update failed for product %d image %d: %s",
+                                pid, img_id, exc,
+                            )
         elif status == 207:
             # Partial success — determine per-item results if available
             results = body.get("data", []) if isinstance(body, dict) else []
@@ -332,6 +424,38 @@ def run(feed_path: str, vendor: str, limit: int | None = None, skus: list[str] |
     )
 
 
+def _patch_human_pricing(skip_df, mapper, client: BCClient) -> None:
+    """Patch price/cost on human-created BC products found via MPN lookup."""
+    patched = skipped = failed = 0
+    for _, row in skip_df.iterrows():
+        item_number = str(row["Item Number"])
+        pricing = mapper.build_price_patch(row)
+        if pricing is None:
+            log.warning("No pricing computable for skipped item %s — skipping patch", item_number)
+            skipped += 1
+            continue
+        try:
+            product_id = client.lookup_by_mpn(item_number)
+        except Exception as exc:  # pylint: disable=broad-except
+            log.warning("MPN lookup failed for %s: %s", item_number, exc)
+            failed += 1
+            continue
+        if product_id is None:
+            log.info("Skipped item %s not found in BC via MPN — nothing to patch", item_number)
+            skipped += 1
+            continue
+        try:
+            client.patch_product_pricing(product_id, pricing["price"], pricing["cost_price"])
+            log.info("Patched pricing for %s (BC id %d): price=%.2f cost=%.2f",
+                     item_number, product_id, pricing["price"], pricing["cost_price"])
+            patched += 1
+        except Exception as exc:  # pylint: disable=broad-except
+            log.warning("Pricing patch failed for %s (BC id %d): %s", item_number, product_id, exc)
+            failed += 1
+    log.info("Human-created pricing patch: %d patched, %d not in BC, %d failed",
+             patched, skipped, failed)
+
+
 def _reconcile_custom_fields(
     payload_fields: list[dict], existing_fields: list[dict]
 ) -> list[dict]:
@@ -376,10 +500,24 @@ def main() -> None:
     parser.add_argument("--vendor", required=True, help="Vendor name (e.g. lutron)")
     parser.add_argument("--limit", type=int, default=None, help="Cap rows processed (useful for testing)")
     parser.add_argument("--sku", nargs="+", metavar="ITEM_NUMBER", help="Filter to specific Item Numbers from the feed")
+    parser.add_argument(
+        "--update-categories",
+        action="store_true",
+        help="Allow update payloads to include categories. Default behavior preserves existing BC categories on updates.",
+    )
     args = parser.parse_args()
 
-    feed_path = args.feed if args.feed else find_feed(args.feed_dir)
-    run(feed_path, vendor=args.vendor, limit=args.limit, skus=args.sku)
+    feed_path = args.feed if args.feed else find_feed(
+        args.feed_dir,
+        enricher_classes=get_mapper_class(args.vendor).ENRICHERS,
+    )
+    run(
+        feed_path,
+        vendor=args.vendor,
+        limit=args.limit,
+        skus=args.sku,
+        update_categories=args.update_categories,
+    )
 
 
 if __name__ == "__main__":

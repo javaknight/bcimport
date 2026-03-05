@@ -50,7 +50,7 @@ run-sample:
 	$(MAKE) run-sample-dev
 run-sample-%: venv envfile-% | $(OUTPUT_DIR)
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --vendor lutron --sku NLV-600-AL
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --vendor lutron --sku MA-AS-WH
 
 run:
 	$(MAKE) run-dev
@@ -95,7 +95,7 @@ delete-run-products:
 delete-run-products-%: venv envfile-%
 	$(printTarget)
 	@test -n "$(RUN_ID)" || (echo "Usage: make delete-run-products RUN_ID=<run-id>" && exit 1)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/delete_run_products.py --run-id $(RUN_ID) --confirm
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python tools/delete_run_products.py --run-id $(RUN_ID) --confirm --papply
 
 clean:
 	$(printTarget)

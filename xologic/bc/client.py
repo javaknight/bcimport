@@ -49,6 +49,32 @@ class BCClient:
     # SKU lookup — resolves existing BC product IDs by SKU
     # ------------------------------------------------------------------
 
+    def iter_products(self, **params) -> Any:
+        """Iterate all products matching the given API filter params."""
+        self._throttle()
+        return self._client.products_v3.all(params=params)
+
+    def lookup_by_mpn(self, mpn: str) -> int | None:
+        """Return BC product ID for a product with the given MPN, or None."""
+        self._throttle()
+        results = list(self._client.products_v3.all(
+            params={"mpn": mpn, "include_fields": "id,mpn"},
+        ))
+        return results[0]["id"] if results else None
+
+    def delete_product(self, product_id: int) -> None:
+        """Delete a product by BC ID."""
+        self._throttle()
+        self._client.api_v3.delete(f"/catalog/products/{product_id}")
+
+    def patch_product_pricing(self, product_id: int, price: float, cost_price: float) -> None:
+        """Update price and cost_price on a product."""
+        self._throttle()
+        self._client.api_v3.put(
+            f"/catalog/products/{product_id}",
+            data={"price": price, "cost_price": cost_price},
+        )
+
     def lookup_skus(self, skus: list[str]) -> dict[str, int]:
         """
         Return a mapping of {sku: bc_id} for all SKUs that exist in BC.
@@ -227,6 +253,14 @@ class BCClient:
         self._throttle()
         self._client.api_v3.delete(
             f"/catalog/products/{product_id}/images/{image_id}"
+        )
+
+    def update_product_image(self, product_id: int, image_id: int, **fields) -> None:
+        """Update fields (e.g. description) on an existing product image."""
+        self._throttle()
+        self._client.api_v3.put(
+            f"/catalog/products/{product_id}/images/{image_id}",
+            data=fields,
         )
 
     # ------------------------------------------------------------------

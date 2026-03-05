@@ -4,27 +4,19 @@ Extends BaseMapper with Lutron field quirks:
 - SKU prefix LU-
 - brand_id 45
 - Description link columns contain pre-built <a> tags; Extra-Spec Sheet is a raw URL
+- PDF URLs are rewritten deterministically to BC-hosted /content/ URLs
 """
 import logging
+import os
 
 import pandas as pd
 
 import vendors.lutron as lutron_cfg
 from enrichers.lutron_pricing_enricher import LutronPricingEnricher
 from mappers.base_mapper import BaseMapper, _num, _str
+from mappers.pdf_links import build_description_link_or_none
 
 log = logging.getLogger(__name__)
-
-# These columns contain complete <a href="...">...</a> strings already
-_PREBUILT_LINK_COLS = [
-    "Extra-Installation Link",
-    "Extra-Line Drawing Link",
-    "Extra-Tech Drawing Link",
-    "Extra-Warranty Link",
-    "Extra-Brochure",
-    "Extra-Video Clip",
-]
-
 
 class LutronMapper(BaseMapper):
     VENDOR_ID = lutron_cfg.VENDOR_ID
@@ -35,17 +27,19 @@ class LutronMapper(BaseMapper):
     ROOT_CATEGORY = lutron_cfg.ROOT_CATEGORY
     VENDOR_CATEGORY = lutron_cfg.VENDOR_CATEGORY
     ENRICHERS = [LutronPricingEnricher]
+    SKIP_ITEM_NUMBERS = getattr(lutron_cfg, "SKIP_ITEM_NUMBERS", frozenset())
+    PDF_DAV_SUBDIR = getattr(lutron_cfg, "PDF_DAV_SUBDIR", "lutron/pdfs")
+    PDF_LINK_COLUMNS = getattr(lutron_cfg, "PDF_LINK_COLUMNS", [])
 
     def map_row(self, row: pd.Series) -> dict:
         payload = super().map_row(row)
+        payload["name"] = _str(row.get("Short Description")) or payload["name"]
+        for img in payload["images"]:
+            img["description"] = payload["name"]
 
         upc = _str(row.get("Pricing-UPC"))
         if upc:
             payload["upc"] = upc
-
-        list_price = _num(row.get("Pricing-ListPrice"))
-        if list_price is not None:
-            payload["retail_price"] = list_price
 
         my_price = _num(row.get("Pricing-MyPrice"))
         if my_price is not None:
@@ -59,19 +53,31 @@ class LutronMapper(BaseMapper):
 
         return payload
 
+    def build_price_patch(self, row: pd.Series) -> dict | None:
+        """Return price fields for patching a human-created BC product."""
+        my_price = _num(row.get("Pricing-MyPrice"))
+        if my_price is None:
+            return None
+        return {
+            "price": round(my_price * lutron_cfg.PRICE_MARKUP, 2),
+            "cost_price": my_price,
+        }
+
     def _build_description(self, row: pd.Series) -> str:
-        """Short Description + pre-built link fields + Spec Sheet (raw URL) + UNSPSC."""
+        """Item Name + pre-built link fields + Spec Sheet (raw URL) + UNSPSC.
+
+        PDF URLs are rewritten deterministically to BC-hosted /content/ paths.
+        """
         parts = [_str(row.get("Short Description")) or ""]
+        content_base_url = os.environ.get("BC_CONTENT_BASE_URL", "").rstrip("/")
 
-        for col in _PREBUILT_LINK_COLS:
+        for col in self.PDF_LINK_COLUMNS:
             val = _str(row.get(col))
-            if val:
-                parts.append(val)
-
-        # Extra-Spec Sheet contains a raw URL, not a pre-built anchor tag
-        spec_url = _str(row.get("Extra-Spec Sheet"))
-        if spec_url:
-            parts.append(f'<a href="{spec_url}">Spec Sheet</a>')
+            if not val:
+                continue
+            rendered = build_description_link_or_none(val, col, self.PDF_DAV_SUBDIR, content_base_url)
+            if rendered:
+                parts.append(rendered)
 
         unspsc = _str(row.get("Extra-UNSPSC"))
         if unspsc:

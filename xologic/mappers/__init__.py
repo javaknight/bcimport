@@ -20,3 +20,13 @@ def get_mapper(vendor: str) -> LutronMapper:  # return type broadens as vendors 
             f"Unknown vendor {vendor!r}. Registered vendors: {list(_REGISTRY)}"
         )
     return cls()
+
+
+def get_mapper_class(vendor: str) -> type:
+    """Return the mapper class (not instantiated) for the given vendor name."""
+    cls = _REGISTRY.get(vendor.lower())
+    if cls is None:
+        raise ValueError(
+            f"Unknown vendor {vendor!r}. Registered vendors: {list(_REGISTRY)}"
+        )
+    return cls

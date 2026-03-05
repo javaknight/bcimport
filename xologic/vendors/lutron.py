@@ -33,3 +33,38 @@ SUBCATEGORIES = [
     "Transformers",
     "Utility Accessories",
 ]
+
+# PDF mirroring/link rewrite configuration
+PDF_DAV_SUBDIR = "catalog/documents/lutron/pdfs"
+PDF_LINK_COLUMNS = [
+    "Extra-Installation Link",
+    "Extra-Line Drawing Link",
+    "Extra-Tech Drawing Link",
+    "Extra-Warranty Link",
+    "Extra-Brochure",
+    "Extra-Video Clip",
+    "Extra-Spec Sheet",
+]
+
+# Human-created products: skip import (no LU- SKU), but patch pricing on the
+# existing BC product via MPN lookup on each run.
+SKIP_ITEM_NUMBERS: frozenset[str] = frozenset([
+    "DITT300BL",
+    "TT-300 BR",
+    "TT-300-W",
+    "TTCL-100H-BL",
+    "TTCL-100H-BR",
+    "TTCL-100H-WH",
+    "LUT-MLC",
+    "RPFDU10BR",
+    "RPFDU10WH",
+    "LCTRP-253P-IV",
+    "PD-3PCL-WH",
+    "P-PKG1P-WH",
+    "DVRF-5NS-WH",
+    "CTRP-253P-WH",
+    "MA-PRO-WH",
+    "MA-R-WH",
+    "RRD-PRO-WH",
+    "AYCL-153P-WH",
+])
