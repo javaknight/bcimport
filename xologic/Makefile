@@ -34,7 +34,7 @@ test: venv
 
 lint: venv
 	$(printTarget)
-	. venv/bin/activate && pylint $(LINTDIRS)/*.py
+	. venv/bin/activate && pylint --fail-under=9.0 $(LINTDIRS)/*.py
 
 format: black isort
 
@@ -128,8 +128,8 @@ push-config-%: envfile-%
 		(echo "ERROR: env/.env.$* not found — copy from env/.env.example and fill in values." && exit 1)
 	set -a && . $(ENV_DIR)/.env.$* && set +a && \
 		aws s3 cp $(ENV_DIR)/.env.$* \
-		s3://$$S3_SECRETS_BUCKET/.env
-	@echo "Pushed: env/.env.$* → s3://$$S3_SECRETS_BUCKET/.env"
+		s3://$$S3_SECRETS_BUCKET/.env && \
+		echo "Pushed: env/.env.$* → s3://$$S3_SECRETS_BUCKET/.env"
 
 $(ENV_FILES):
 	$(printTarget)

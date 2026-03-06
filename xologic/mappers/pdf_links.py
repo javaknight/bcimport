@@ -2,7 +2,6 @@
 import html.parser
 import logging
 import re
-import re
 from urllib.parse import urlparse
 
 log = logging.getLogger(__name__)
