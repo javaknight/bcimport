@@ -27,6 +27,7 @@ _COLUMN_MAP = {
     "UPC Code":   "Pricing-UPC",
     "List Price": "Pricing-ListPrice",
     "My Price":   "Pricing-MyPrice",
+    "MAP":        "Pricing-MAP",
 }
 
 

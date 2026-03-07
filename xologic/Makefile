@@ -50,7 +50,7 @@ run-sample:
 	$(MAKE) run-sample-dev
 run-sample-%: venv envfile-% | $(OUTPUT_DIR)
 	$(printTarget)
-	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --vendor lutron --sku MA-AS-WH
+	set -a && . $(ENV_DIR)/.env.$* && set +a && venv/bin/python processor.py --feed $(SAMPLE_FEED) --vendor lutron --sku CAR2S-20-STR-BL
 
 run:
 	$(MAKE) run-dev
