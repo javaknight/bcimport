@@ -40,9 +40,14 @@ class LutronMapper(BaseMapper):
             payload["upc"] = upc
 
         my_price = _num(row.get("Pricing-MyPrice"))
+        map_price = _num(row.get("Pricing-MAP")) or None  # treat 0 as absent
         if my_price is not None:
             payload["cost_price"] = my_price
-            payload["price"] = round(my_price * lutron_cfg.PRICE_MARKUP, 2)
+            if map_price is not None:
+                # Sell at MAP; never mark up above it
+                payload["price"] = map_price
+            else:
+                payload["price"] = round(my_price * lutron_cfg.PRICE_MARKUP, 2)
 
         if not payload.get("price"):
             raise ValueError(
@@ -82,6 +87,12 @@ class LutronMapper(BaseMapper):
         my_price = _num(row.get("Pricing-MyPrice"))
         if my_price is None:
             return None
+        map_price = _num(row.get("Pricing-MAP")) or None  # treat 0 as absent
+        if map_price is not None:
+            return {
+                "price": map_price,
+                "cost_price": my_price,
+            }
         return {
             "price": round(my_price * lutron_cfg.PRICE_MARKUP, 2),
             "cost_price": my_price,
