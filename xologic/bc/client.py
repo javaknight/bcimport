@@ -115,7 +115,17 @@ class BCClient:
             response = self._client.products_v3.create(data=payload)
             return 200, response
         except BigCommerceException as exc:
-            return exc.status_code, {"errors": exc.errors}
+            response_text = None
+            try:
+                resp = getattr(exc, "response", None)
+                response_text = getattr(resp, "text", None) if resp is not None else None
+            except Exception:
+                response_text = None
+            return exc.status_code, {
+                "errors": exc.errors,
+                "title": getattr(exc, "message", None),
+                "response_text": response_text,
+            }
 
     # ------------------------------------------------------------------
     # Update (batch PUT) — up to BATCH_SIZE at a time
@@ -132,7 +142,17 @@ class BCClient:
             response = self._client.api_v3.put("/catalog/products", data=payloads)
             return 200, response
         except BigCommerceException as exc:
-            return exc.status_code, {"errors": exc.errors}
+            response_text = None
+            try:
+                resp = getattr(exc, "response", None)
+                response_text = getattr(resp, "text", None) if resp is not None else None
+            except Exception:
+                response_text = None
+            return exc.status_code, {
+                "errors": exc.errors,
+                "title": getattr(exc, "message", None),
+                "response_text": response_text,
+            }
 
     # ------------------------------------------------------------------
     # Metafields

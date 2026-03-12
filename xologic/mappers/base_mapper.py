@@ -70,15 +70,49 @@ class BaseMapper:
     # ------------------------------------------------------------------
 
     def map_row(self, row: pd.Series) -> dict:
-        """Map one XOlogic feed row to a BigCommerce product payload.
+        """Public map entrypoint.
 
-        Raises ValueError if the row is missing required fields (e.g. image).
+        Subclasses should override `_map_row` (not `map_row`) to customise
+        vendor-specific behaviour. This method calls the subclass hook and
+        then applies final post-processing such as name truncation and image
+        description wiring so those rules are enforced for all vendors.
+        """
+        payload = self._map_row(row)
+
+        # Final safety: require images
+        if not payload.get("images"):
+            raise ValueError(
+                f"No image URL — row skipped (Item Number: {row['Item Number']})"
+            )
+
+        # Ensure payload name respects BigCommerce 1..250 length constraint.
+        name = payload.get("name")
+        if name:
+            truncated = _truncate_to_word(name, 250)
+            if truncated is not None and len(truncated) < len(name):
+                log.warning(
+                    "Truncated name for %s: %d -> %d chars",
+                    payload.get("sku"),
+                    len(name),
+                    len(truncated),
+                )
+            payload["name"] = truncated
+
+        # Ensure image descriptions reflect final name
+        for img in payload.get("images", []):
+            img["description"] = payload.get("name")
+
+        return payload
+
+    # Subclass hook --------------------------------------------------
+    def _map_row(self, row: pd.Series) -> dict:
+        """Default mapping implementation used by `map_row`.
+
+        Vendor subclasses should override this method instead of `map_row`.
         """
         sku = build_sku(self.SKU_PREFIX, str(row["Item Number"]))
 
         images = self._build_images(row)
-        if not images:
-            raise ValueError(f"No image URL — row skipped (Item Number: {row['Item Number']})")
 
         payload: dict = {
             "sku": sku,
@@ -109,9 +143,6 @@ class BaseMapper:
         height = _num(row.get("Height"))
         if height is not None:
             payload["height"] = height
-
-        for img in payload["images"]:
-            img["description"] = payload["name"]
 
         return payload
 
@@ -206,6 +237,24 @@ def _add_field(fields: list[dict], name: str, value: str | None) -> None:
 
 
 MAX_SKU_LENGTH = 30
+
+
+def _truncate_to_word(s: str | None, limit: int = 250) -> str | None:
+    """Truncate string to at most `limit` characters without breaking the last word.
+
+    If truncation would break a word, trim back to the previous whitespace boundary.
+    Returns None if the input is None.
+    """
+    if s is None:
+        return None
+    s = str(s).strip()
+    if len(s) <= limit:
+        return s
+    truncated = s[:limit]
+    last_space = truncated.rfind(" ")
+    if last_space > 0:
+        truncated = truncated[:last_space]
+    return truncated.rstrip()
 
 
 def build_sku(prefix: str, item_number: str) -> str:

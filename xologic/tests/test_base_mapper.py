@@ -183,3 +183,59 @@ class TestChannelIds:
         monkeypatch.delenv("CHANNEL_ID", raising=False)
         mapper = self._make_mapper()
         assert mapper.channel_ids == [1]
+
+
+class TestTruncation:
+    def test_truncate_to_word_basic(self):
+        from mappers.base_mapper import _truncate_to_word
+
+        s = "short name"
+        assert _truncate_to_word(s, 250) == s
+
+    def test_truncate_to_word_trims_on_space(self):
+        from mappers.base_mapper import _truncate_to_word
+
+        # build a string that would cut a word at the 20-char boundary
+        s = "word1 word2 word3 word4 word5"
+        # choose limit that falls inside 'word4'
+        limit = s.index("word4") + 2
+        t = _truncate_to_word(s, limit)
+        # truncated should end before 'word4' (so ends with 'word3')
+        assert t is not None
+        assert "word4" not in t
+
+    def test_truncate_to_word_none(self):
+        from mappers.base_mapper import _truncate_to_word
+
+        assert _truncate_to_word(None, 250) is None
+
+    def test_base_mapper_map_row_truncates_name_and_sets_image_description(self):
+        """Ensure BaseMapper.map_row truncates long names and writes image descriptions."""
+        from mappers.base_mapper import BaseMapper
+
+        class _TestMapper(BaseMapper):
+            VENDOR_ID = 1
+            PRODUCT_TYPES = {0}
+            SKU_PREFIX = "T-"
+            CATEGORY_MAP_FILE = "category_map.json"
+            ROOT_CATEGORY = "Root"
+            VENDOR_CATEGORY = "TestVendor"
+
+            def _build_images(self, row):
+                return [{"image_url": "http://example.com/x.jpg", "is_thumbnail": True}]
+
+            def _build_categories(self, row):
+                return []
+
+        mapper = _TestMapper()
+
+        long_words = ["lorem"] * 80
+        long_name = " ".join(long_words)
+
+        import pandas as pd
+
+        row = pd.Series({"Item Number": "SKU1", "Item Name": long_name})
+
+        payload = mapper.map_row(row)
+        assert len(payload["name"]) <= 250
+        assert payload["images"][0]["description"] == payload["name"]

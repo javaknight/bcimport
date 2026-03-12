@@ -31,11 +31,9 @@ class LutronMapper(BaseMapper):
     PDF_DAV_SUBDIR = getattr(lutron_cfg, "PDF_DAV_SUBDIR", "lutron/pdfs")
     PDF_LINK_COLUMNS = getattr(lutron_cfg, "PDF_LINK_COLUMNS", [])
 
-    def map_row(self, row: pd.Series) -> dict:
-        payload = super().map_row(row)
+    def _map_row(self, row: pd.Series) -> dict:
+        payload = super()._map_row(row)
         payload["name"] = _str(row.get("Short Description")) or payload["name"]
-        for img in payload["images"]:
-            img["description"] = payload["name"]
 
         upc = _str(row.get("Pricing-UPC"))
         if upc:
@@ -51,7 +49,33 @@ class LutronMapper(BaseMapper):
                 f"No pricing data for Item Number {row['Item Number']} — skipped"
             )
 
+        depth = self._resolve_depth(payload)
+        if depth is not None:
+            payload["depth"] = depth
+
         return payload
+
+    def _resolve_depth(self, payload: dict) -> float | None:
+        """Depth value for BC physical products.
+
+        Rule order (Lutron):
+        1) Use custom field Length when present.
+        2) Otherwise, use the smaller of width/height when present.
+        3) Otherwise, leave unset.
+        """
+        for field in payload.get("custom_fields", []):
+            if field.get("name") == "Length":
+                length_value = _str(field.get("value"))
+                if length_value:
+                    return _num(length_value)
+                break
+
+        width = payload.get("width")
+        height = payload.get("height")
+        candidates = [v for v in (width, height) if isinstance(v, (int, float))]
+        if not candidates:
+            return None
+        return float(min(candidates))
 
     def build_price_patch(self, row: pd.Series) -> dict | None:
         """Return price fields for patching a human-created BC product."""
